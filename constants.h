@@ -20,6 +20,8 @@ extern "C" {
     #define PREC_POW(x, y) powf(x, y)
     #define PREC_ABS(x) fabsf(x)
     #define PREC_ROUND(x) roundf(x)
+    #define PREC_CEIL(x) ceilf(x)
+    #define PREC_FLOOR(x) floorf(x)
 #else
     #define PREC double
     #define PREC_MAX DBL_MAX
@@ -29,6 +31,8 @@ extern "C" {
     #define PREC_POW(x, y) pow(x, y)
     #define PREC_ABS(x) fabs(x)
     #define PREC_ROUND(x) round(x)
+    #define PREC_CEIL(x) ceil(x)
+    #define PREC_FLOOR(x) floor(x)
 #endif
     
 #ifdef __cplusplus

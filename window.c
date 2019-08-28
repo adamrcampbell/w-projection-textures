@@ -13,6 +13,19 @@ void populate_ps_window(PREC *window, int size)
     }
 }
 
+void populate_centered_prolate(PREC *window, int window_width, int prolate_width)
+{
+    int half_prolate_width = prolate_width / 2;
+    int half_window_width = window_width / 2;
+    int offset = half_window_width - half_prolate_width;
+
+    for(int index = 0; index < prolate_width; ++index)
+    {
+        PREC nu = PREC_ABS(calculate_window_stride(index, prolate_width));
+        window[index + offset] = prolate_spheroidal(nu);
+    }
+}
+
 PREC calculate_window_stride(int index, int size)
 {
     return (index - size / 2) / ((PREC) size / 2.0);
