@@ -21,108 +21,117 @@ void generate_w_projection_kernels(void)
     else
         printf(">>> INFO: Generating W-Projection kernels using double precision...\n");
     
-    int number_w_planes_to_create = 5;
+    int number_w_planes_to_create = 339;
     int number_w_planes = 339;
     int grid_size = 18000;
+    int image_size = 15000;
     int min_support = 4;
     int max_support = 44;
-    int texture_size = 512; // MUST BE POWER OF TWO
-  	
-    size_t max_bytes_per_plane = 20 * 1024 * 1024; // 12MB
+    int resolution_size = 4096; // power of 2
+    int texture_size = 2048;     // power of 2
+    int half_tex_size = texture_size / 2;
     
     PREC max_uvw  = 7083.386050;
     PREC w_scale = PREC_POW(number_w_planes - 1, 2.0) / max_uvw;
     PREC cell_size = 6.39708380288949E-06; //6.39954059065e-06; <= we suspect new cell size
     PREC w_to_max_support_ratio = (max_support - min_support) / max_uvw;
-    PREC fov = cell_size * grid_size;
+    PREC fov = cell_size * image_size;
 
-    // Ensure texture size is a power of two
-    if(!is_power_of_two(texture_size))
+    if(!is_power_of_two(resolution_size) || !is_power_of_two(texture_size))
     {
-        printf(">>> ERROR: Texture size must be a power of two, exiting...\n");
-        exit(EXIT_FAILURE);
-    }
-
-    // Calculate convolution kernel memory requirements
-    size_t max_mem_bytes = MIN(max_bytes_per_plane * number_w_planes, get_total_ram_capacity());
-    PREC max_conv_size = PREC_SQRT(max_mem_bytes / (16.0 * number_w_planes));
-    printf("Max conv size: %f\n", max_conv_size);
-    int nearest = get_next_pow_2((unsigned int) 2 * (int) (max_conv_size / 2.0));
-    printf("Nearest: %d\n", nearest);
-    int conv_size = nearest;
-    printf("Conv size: %d\n", conv_size);
-    int conv_half_size = conv_size / 2;
-    printf("Conv half size: %d\n", conv_half_size);
-
-    // Ensure max convolution size is larger than kernel texture size
-    if(texture_size > max_conv_size)
-    {
-    	printf(">>> ERROR: Texture size must be less than or equal to the maximum convolution size (resolution), exiting...\n");
+    	printf(">>> ERROR: Resolution and texture size must be a power of two, exiting...\n");
     	exit(EXIT_FAILURE);
     }
-   
-    PREC max_l = PREC_SIN(0.5 * fov);
+
+    // Ensure max convolution size is larger than kernel texture size
+    if(texture_size > resolution_size)
+    {
+    	printf(">>> ERROR: Texture size must be less than or equal to the convolution resolution size, exiting...\n");
+    	exit(EXIT_FAILURE);
+    }
+
+    // Ensure resolution supports the maximum kernel support dimensions 
+    if(resolution_size < max_support * 2 + 1)
+    {
+    	printf(">>> ERROR: Resolution size must be greater or equal to the maximum kernel full support, exiting...\n");
+    	exit(EXIT_FAILURE);
+    }
     
     // Allocation of memory
-    Complex *kernels = calloc(number_w_planes * texture_size * texture_size, sizeof(Complex));
-    Complex *screen = calloc(conv_size * conv_size, sizeof(Complex));
+    Complex *kernels = calloc(number_w_planes * half_tex_size * half_tex_size, sizeof(Complex));
+    Complex *screen = calloc(resolution_size * resolution_size, sizeof(Complex));
     Complex *interpolated = calloc(texture_size * texture_size, sizeof(Complex));
-    PREC* taper = calloc(conv_size, sizeof(PREC));
+    PREC* taper = calloc(resolution_size, sizeof(PREC));
     
-    unsigned int plane_to_save = 0;
+    int plane_to_save = 0;
     int start_plane = 0; // number_w_planes - number_w_planes_to_create;
-    int end_plane = 5;
+    int end_plane = number_w_planes;
+
+    printf("FOV: %f\n", fov);
 
     printf(">>> UPDATE: Creating w projection kernels...\n");
     for(int iw = start_plane; iw < end_plane; ++iw)
     {
         printf(">>> UPDATE: Creating kernel %d\n", iw);
-        memset(screen, 0, conv_size * conv_size * sizeof(Complex));
+        memset(screen, 0, resolution_size * resolution_size * sizeof(Complex));
         memset(interpolated, 0, texture_size * texture_size * sizeof(Complex));
-        memset(taper, 0, conv_size * sizeof(PREC));
+        memset(taper, 0, resolution_size * sizeof(PREC));
         
         // Populate taper based on current kernel support
         PREC w = iw * iw / w_scale;
         int support = (int) PREC_ROUND(calculate_support(w, min_support, w_to_max_support_ratio));
         int full_support = support * 2 + 1;
-        populate_centered_prolate(taper, conv_size, full_support);
+        populate_centered_prolate(taper, resolution_size, full_support);
+
+        printf("%d => %d\n", iw, full_support);
 
         // Generate screen
-        PREC sampling = ((2.0 * max_l) / grid_size) * ((PREC) grid_size / (PREC) full_support);
-        generate_phase_screen(iw, conv_size, sampling, w_scale, taper, screen);
+        PREC f = (2.0 * PI * iw * iw) / w_scale;
+        PREC max_l = PREC_SIN(0.5 * fov);
+    	PREC sampling = ((2.0 * max_l) / image_size) * ((PREC) grid_size / (PREC) full_support); // does this need to include dynamic oversampling?
+//         generate_phase_screen(f, fov, resolution_size, taper, screen);
+    	generate_phase_screen(f, sampling, resolution_size, taper, screen);
 
 		if(iw == plane_to_save)        
-        	save_kernel_to_file("../kernels/phase_screen.csv", screen, conv_size);
+        	save_kernel_to_file("../kernels/phase_screen.csv", screen, resolution_size);
 
+		// FFT
         printf(">>> UPDATE: Executing Fourier Transform...\n");
-        // FFT
-        fft_2d(screen, conv_size);
+        fft_shift_2d(screen, resolution_size);
+        fft_2d(screen, resolution_size);
+        fft_shift_2d(screen, resolution_size);
 
 		if(iw == plane_to_save)        
-        	save_kernel_to_file("../kernels/post-FFT.csv", screen, conv_size);
+        	save_kernel_to_file("../kernels/post-FFT.csv", screen, resolution_size);
 
         // Interpolate kernel down to texture
-        interpolate_kernel(screen, interpolated, conv_size, texture_size);
+        interpolate_kernel(screen, interpolated, resolution_size, texture_size);
 
 		if(iw == plane_to_save)        
         	save_kernel_to_file("../kernels/interpolated.csv", interpolated, texture_size);
 
         // Normalize texture kernel for scaling on GPU
-        normalize_kernel(interpolated, texture_size, support);
+        PREC true_support = calculate_support(w, min_support, w_to_max_support_ratio);
+        normalize_kernel(interpolated, texture_size, full_support, true_support * 2.0 + 1.0);
 
 		if(iw == plane_to_save)        
         	save_kernel_to_file("../kernels/normalized.csv", interpolated, texture_size);
         
         printf(">>> UPDATE: Storing useful quadrant for further processing...\n");
         // Clip
-        for(int row_index = 0; row_index < texture_size; ++row_index)
-            for(int col_index = 0; col_index < texture_size; ++col_index)
+        for(int row_index = half_tex_size; row_index < texture_size; ++row_index)
+            for(int col_index = half_tex_size; col_index < texture_size; ++col_index)
             {
-                int offset = iw * texture_size * texture_size;
-                int k_index = offset + row_index * texture_size + col_index;
+                int offset = iw * half_tex_size * half_tex_size;
+                int k_index = offset + (row_index - half_tex_size) * half_tex_size + (col_index - half_tex_size);
                 kernels[k_index] = interpolated[row_index * texture_size + col_index];
             }
     }
+
+    printf(">>> UPDATE: Saving kernels to file...\n");
+    save_kernels_to_file("../kernels/82-70_textured_real.csv", "../kernels/82-70_textured_imag.csv", kernels,
+    	half_tex_size, number_w_planes);
+    printf(">>> UPDATE: Saving kernels to file...complete\n");
     
     free(taper);
     free(screen);
@@ -136,16 +145,15 @@ void generate_w_projection_kernels(void)
     for(int iw = 0; iw < number_w_planes; ++iw)
     {
         PREC w = iw * iw / w_scale;
-        int kernel_offset = iw * texture_size * texture_size;
+        int kernel_offset = iw * half_tex_size * half_tex_size;
         PREC support = calculate_support(w, min_support, w_to_max_support_ratio);
-
         fprintf(support_file, "%d\n", (int) PREC_ROUND(support));
         
         for(int row = 0; row < 1; ++row)
         {
-            for(int col = 0; col < texture_size; ++col)
+            for(int col = 0; col < half_tex_size; ++col)
             {
-                int plane_index = kernel_offset + row * texture_size + col;
+                int plane_index = kernel_offset + row * half_tex_size + col;
                 
                 fprintf(kernel_real_file, "%.10f ", kernels[plane_index].real);
                 fprintf(kernel_imag_file, "%.10f ", kernels[plane_index].imag);
@@ -164,28 +172,25 @@ void generate_w_projection_kernels(void)
     printf(">>> UPDATE: W-Projection kernels successfully created, exiting...\n");
 }
 
-void generate_phase_screen(int iw, int conv_size, PREC sampling, PREC w_scale, PREC* taper, Complex *screen)
-{
-    PREC f = (2.0 * PI * iw * iw) / w_scale;
-    printf("Kernel %d => F: %f\n", iw, f);
-    int conv_size_half = conv_size / 2;
-    
-    for(int iy = -conv_size_half; iy < conv_size_half; ++iy)
+void generate_phase_screen(PREC f, PREC fov, int resolution_size, PREC* taper, Complex *screen)
+{   
+	int half_res_size = resolution_size / 2;
+
+    for(int iy = 0; iy < resolution_size; ++iy)
     {
-        PREC taper_y = taper[iy + conv_size_half];
-        PREC m = sampling * (PREC) iy;
+        PREC taper_y = taper[iy];
+        PREC m = ((PREC)(iy - half_res_size)) * fov;
         PREC msq = m*m;
-        int offset = (iy > -1 ? iy : (iy + conv_size)) * conv_size;
         
-        for(int ix = -conv_size_half; ix < conv_size_half; ++ix)
+        for(int ix = 0; ix < resolution_size; ++ix)
         {
-            PREC l = sampling * (PREC) ix;
+            PREC l = ((PREC)(ix - half_res_size)) * fov;
             PREC rsq = l * l + msq;
             if (rsq < 1.0) {
-                PREC taper_x = taper[ix + conv_size_half];
+                PREC taper_x = taper[ix];
                 PREC taper = taper_x * taper_y;
-                int index = (offset + (ix > -1 ? ix : (ix + conv_size)));
                 PREC phase = f * (PREC_SQRT(1.0 - rsq) - 1.0);
+                int index = iy * resolution_size + ix;
                 screen[index] = (Complex) {
                     .real = taper * PREC_COS(phase),
                     .imag = taper * PREC_SIN(phase)
@@ -273,6 +278,11 @@ int calc_relative_index(PREC x, PREC width)
     return ((int) PREC_FLOOR(((x + 1.0) / 2.0) * (width - offset))) + 1;
 }
 
+PREC calcSphrShift(PREC index, PREC width)
+{   
+    return -1.0 + index * (2.0 / width);
+}
+
 void get_bicubic_neighbours(PREC row_stride, PREC col_stride, Complex *neighbours, PREC *row_strides,
 	PREC *col_strides, int src_support, Complex *src)
 {
@@ -294,11 +304,11 @@ void get_bicubic_neighbours(PREC row_stride, PREC col_stride, Complex *neighbour
         {
             // set row and col shifts for neighbour
             row_strides[neighbour_index] = (row_stride < 0.0) ? 
-            	calculate_window_stride(row_index - 1, src_support - 1) : calculate_window_stride(row_index, src_support - 1);
+            	calcSphrShift(row_index - 1, src_support - 1) : calcSphrShift(row_index, src_support - 1);
             col_strides[neighbour_index] = (col_stride < 0.0) ? 
-            	calculate_window_stride(col_index - 1, src_support - 1) : calculate_window_stride(col_index, src_support - 1);            
+            	calcSphrShift(col_index - 1, src_support - 1) : calcSphrShift(col_index, src_support - 1);            
             // neighbour falls out of bounds
-            if(row_index < 0 || col_index < 0 || row_index >= half_src_support || col_index >= half_src_support)
+            if(row_index < 1 || col_index < 1 || row_index > src_support || col_index > src_support)
                 neighbours[neighbour_index] = (Complex) {.real = 0.0, .imag = 0.0};
             // neighbour exists
             else
@@ -326,7 +336,7 @@ Complex interpolate_sample(Complex z0, Complex z1, Complex z2, Complex z3,
     return z;
 }
 
-void normalize_kernel(Complex *kernel, int texture_size, int kernel_support)
+void normalize_kernel(Complex *kernel, int texture_size, int kernel_support, PREC true_support)
 {    
     PREC real_sum = 0.0;
 
@@ -334,7 +344,8 @@ void normalize_kernel(Complex *kernel, int texture_size, int kernel_support)
         for(int col_index = 0; col_index < texture_size; ++col_index)
             real_sum += kernel[row_index * texture_size + col_index].real;
     
-    PREC norm_scalar = PREC_POW((PREC) texture_size / (PREC) kernel_support, 2.0) / real_sum;
+    // PREC norm_scalar = PREC_POW((PREC) texture_size / (PREC) kernel_support, 2.0) / real_sum;
+	PREC norm_scalar = PREC_POW((PREC) texture_size / (PREC) kernel_support, 2.0) / real_sum;
 
     for(int row_index = 0; row_index < texture_size; ++row_index)
     {
@@ -361,4 +372,28 @@ void save_kernel_to_file(char *filename, Complex *kernel, int dimension)
     }
     
     fclose(file);
+}
+
+void save_kernels_to_file(const char *real_file, const char *imag_file, 
+	const Complex *kernels, const int width, const int num_kernels)
+{
+	FILE *real = fopen(real_file, "w");
+	FILE *imag = fopen(imag_file, "w");
+
+	for(int k = 0; k < num_kernels; ++k)
+	{
+		for(int r = 0; r < width; ++r)
+			for(int c = 0; c < width; ++c)
+			{
+				int i = (k * width * width) + (r * width) + c;
+				fprintf(real, "%.10f ", kernels[i].real);
+				fprintf(imag, "%.10f ", kernels[i].imag);
+			}
+
+		fprintf(real, "\n");
+		fprintf(imag, "\n");
+	}
+
+	fclose(real);
+	fclose(imag);
 }
